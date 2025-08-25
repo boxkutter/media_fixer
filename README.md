@@ -23,6 +23,17 @@ Supports video, audio, and subtitle processing with GPU acceleration (NVENC), st
 curl -L https://raw.githubusercontent.com/YourUserName/YourRepo/main/media_fixer.py -o media_fixer.py && chmod +x media_fixer.py
 python3 media_fixer.py --help
 
+
+curl -sSL https://raw.githubusercontent.com/yourusername/yourrepo/main/install_mf.sh | bash -s -- -d /media/smb_share --container mp4
+
+
+cpu
+docker run --rm -v /path/to/media:/media media-fixer -f /media/test.mkv -c mp4
+
+gpu
+docker run --rm --gpus all -v /path/to/media:/media media-fixer -f /media/test.mkv -c mp4
+
+
 ## 📦 Requirements
 - [Python 3.8+](https://www.python.org/)
 - [FFmpeg](https://ffmpeg.org/) with `ffprobe`
