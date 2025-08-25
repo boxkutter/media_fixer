@@ -1,151 +1,127 @@
-# The Media Fixer (mf)
+# 🎬 Media Fixer
 
-A Python tool to **fix and transcode media files** in your library with support for:
-- 📂 Preserving folder structure  
-- 🎞 Video & audio transcoding (with quality control via CRF)  
-- 🌍 Optional removal of non-English streams  
-- 📝 Subtitle handling (conversion & stripping)  
-- ⚡ Parallel processing for speed  
-- 🛡 Safe temporary files (`_tmp_` prefix) to avoid overwrites  
-- 🛠 Detailed error logging  
+A Python-based media transcoder and fixer built on top of **FFmpeg**.  
+Supports video, audio, and subtitle processing with GPU acceleration (NVENC), stream filtering, parallel transcoding, and safe temporary file handling.  
 
 ---
 
-## Features
-- Automatically detects media streams (video, audio, subtitles) using `ffprobe`.
-- Supports container conversion (MP4, MKV, AVI, etc.).
-- Removes or strips non-English audio and subtitles.
-- Can **replace originals** or create new output files.
-- Runs multiple transcodes concurrently with progress bars (if [`tqdm`](https://github.com/tqdm/tqdm) is installed).
-- Produces error logs (`transcode-errors.log`) for failed conversions.
+## ✨ Features
+- 🔍 **Media discovery** using `ffprobe`
+- ⚡ **Parallel transcoding** with configurable worker count
+- 🎥 **Video codec control** (H.264, H.265, AV1, etc.)
+- 🔊 **Audio codec control** + channel conversion (stereo/5.1)
+- 💬 **Subtitle support** (convert between formats, drop unsupported)
+- 🌍 **Language filtering** (keep only desired audio/subs with `--strip`)
+- 📦 **Container conversion** (e.g., MKV → MP4 → WebM)
+- 🖥 **GPU acceleration** (NVIDIA NVENC) with automatic CPU fallback
+- 🛡 **Safe temp files** with `_tmp_` prefix
+- 📂 **Preserves folder structure**
+- 📝 **Error logging** with `mf-errors.log`
 
 ---
+## Getting Started
+curl -L https://raw.githubusercontent.com/YourUserName/YourRepo/main/media_fixer.py -o media_fixer.py && chmod +x media_fixer.py
+python3 media_fixer.py --help
 
-## Requirements
-- Python **3.8+**
-- [`ffmpeg`](https://ffmpeg.org/download.html) (must be in `$PATH`)
-- [`ffprobe`](https://ffmpeg.org/download.html) (comes with ffmpeg)
-- (optional) [`tqdm`](https://pypi.org/project/tqdm/) for progress bars  
+## 📦 Requirements
+- [Python 3.8+](https://www.python.org/)
+- [FFmpeg](https://ffmpeg.org/) with `ffprobe`
+- Optional:
+  - [tqdm](https://github.com/tqdm/tqdm) for progress bars  
+  - NVIDIA GPU + CUDA-enabled FFmpeg build for hardware acceleration
 
-Install Python dependencies:
+Install tqdm:
 ```bash
 pip install tqdm
-Installation
-Clone this repo and make the script executable:
-
+🚀 Usage
 bash
 Copy
 Edit
-git clone https://github.com/yourname/media-fixer.git
-cd media-fixer
-chmod +x mediafix.py
-Usage
-Run against a single file:
+python mf.py [options]
+Main Options
+-f, --file <path> : Single media file to process
 
+-d, --dir <path> : Directory to scan recursively
+
+-o, --output <path> : Alternative output directory
+
+-c, --container <ext> : Target container (mp4, mkv, webm, …)
+
+-v, --video-codec <codec> : Target video codec (default: copy)
+
+-a, --audio-codec <codec> : Target audio codec (default: copy)
+
+-ch, --audio-channels 2|6 : Force stereo (2) or 5.1 (6)
+
+-s, --subtitle-codec <codec> : Subtitle codec (copy, srt, mov_text, …)
+
+-q, --quality <int> : CRF/Quality (18–28 for x264/x265, 0 = lossless)
+
+Language Filtering
+--strip : Keep only specified audio/subs language
+
+--audio-lang <iso> : Target audio language (default: eng)
+
+--subs-lang <iso> : Target subtitle language (default: eng)
+
+Control & Debug
+--probe : Show file info only (no transcoding)
+
+--workers <n> : Number of concurrent workers (default: 4)
+
+--dry-run : Show what would happen, no changes made
+
+--no-replace : Do not overwrite source files (keep both)
+
+--quiet : Suppress progress bars
+
+--debug : Print extra debug info
+
+--logfile <file> : Error log file (default: mf-errors.log)
+
+🔧 Examples
+Convert MKV to MP4 while keeping only English audio + subtitles
 bash
 Copy
 Edit
-./mediafix.py -f "Movies/Inception.mkv" -v libx265 -a aac -q 23 --replace
-Run against a directory (recursive):
-
+python mf.py -f "movie.mkv" -c mp4 --strip --audio-lang eng --subs-lang eng
+Transcode entire folder to H.265 MKV with CRF 23
 bash
 Copy
 Edit
-./mediafix.py -d "Shows/" -c mp4 -q 20 --strip --replace
-Dry-run (show what would happen, no transcoding):
-
+python mf.py -d ./Media --container mkv --video-codec libx265 -q 23
+Downmix to stereo and re-encode audio as AAC
 bash
 Copy
 Edit
-./mediafix.py -d "Movies/" --dry-run
-Probe file streams (no transcoding):
-
+python mf.py -f video.mkv -a aac -ch 2
+Probe file streams
 bash
 Copy
 Edit
-./mediafix.py -f "Episode.mkv" --probe
-Options
-Option	Description
--f, --file	Single media file to transcode
--d, --dir	Directory to scan (recursive)
--o, --output	Output directory (default: alongside input)
--c, --container	Target container format (mp4, mkv, etc.)
--v, --video-codec	Video codec (copy, libx264, libx265, etc.)
--a, --audio-codec	Audio codec (copy, aac, ac3, etc.)
--s, --subtitle-codec	Subtitle codec (copy, srt, mov_text)
--q, --quality	CRF quality (lower = better quality, larger file). Default: 0 (copy). Recommended: 20 (high), 23 (default), 28 (smaller)
--e, --remove-non-english	Remove non-English subtitles only
---strip	Remove non-English audio and subtitles
---replace	Replace input file (safe: uses _tmp_ prefix until success)
---probe	Print stream info only (no transcoding)
---workers	Number of concurrent jobs (default: 4)
---logfile	Error log file (default: transcode-errors.log)
---quiet	Disable progress output
---dry-run	Show actions but don’t transcode
+python mf.py -f movie.mkv --probe
+⚡ GPU Acceleration
+If an NVIDIA GPU is detected and your FFmpeg build supports CUDA:
 
-Examples
-Convert MKV to MP4 with H.265 and AAC:
-bash
-Copy
-Edit
-./mediafix.py -f "movie.mkv" -c mp4 -v libx265 -a aac -q 23
-Strip all non-English audio & subtitles, keep container:
-bash
-Copy
-Edit
-./mediafix.py -d "Shows/" --strip --replace
-Re-encode only video, keep original audio/subs:
-bash
-Copy
-Edit
-./mediafix.py -f "clip.avi" -v libx264 -a copy -s copy
-Convert a whole library, preserving folder structure:
-bash
-Copy
-Edit
-./mediafix.py -d "MediaLibrary/" -c mp4 -v libx265 -a aac --replace
-Notes
-Temp files are prefixed with _tmp_ to avoid overwriting. They are renamed after success.
+H.264 → h264_nvenc
 
-If --replace is not specified, new files will be created alongside originals.
+H.265/HEVC → hevc_nvenc
 
-If transcoding fails, originals are never deleted.
+If GPU initialization fails, the script automatically falls back to CPU (libx264/libx265).
 
-Errors are logged to transcode-errors.log.
+📝 Error Handling
+Errors are logged to mf-errors.log (configurable with --logfile)
 
-Quality Control (-q option)
+Temporary files are prefixed with _tmp_
 
-You can use the -q option to reduce large video files to smaller but good-quality outputs.
-This option maps to ffmpeg's CRF (Constant Rate Factor) setting.
+Original files are preserved unless explicitly replaced
 
-Lower values = higher quality (and larger file size).
+📄 License
+MIT License. Use at your own risk.
 
-Higher values = smaller files (but more quality loss).
+🙌 Credits
+FFmpeg
 
-Typical range: 18–28.
+tqdm
 
-18–20 → Near lossless, very high quality
-
-21–23 → Good balance of quality and size
-
-24–28 → Smallest size, noticeable quality loss
-
-Example:
-
-python videoprocessor.py input.mkv -q 23
-
-Recommended Codec + CRF Presets
-
-Here are some common setups you can use with the -q option:
-
-Codec	Example Command	When to Use
-libx264	-v libx264 -q 20	Best for compatibility (works everywhere).
-libx265	-v libx265 -q 23	Best for small file sizes, but slower to encode.
-libvpx-vp9	-v libvpx-vp9 -q 30	Open-source, good quality, smaller than H.264.
-libaom-av1	-v libaom-av1 -q 28	Cutting-edge, best compression, but very slow.
-
-👉 Tip: If unsure, use H.264 (libx264 -q 20) for compatibility or H.265 (libx265 -q 23) for smaller files.
-
-
-License
-MIT License © 2025 B0xKutter
+Python standard library

@@ -18,6 +18,7 @@ import concurrent.futures
 import json
 import subprocess
 import sys
+import shutil
 from pathlib import Path
 from typing import List, Optional, Dict, Callable
 
@@ -33,6 +34,10 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 # Helper functions
 # --------------------------------------------------------------------------- #
+def detect_nvidia_gpu() -> bool:
+    """Return True if an NVIDIA GPU is available for NVENC encoding."""
+    return shutil.which("nvidia-smi") is not None
+
 def ffmpeg_available() -> bool:
     return subprocess.call(
         ["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -83,153 +88,167 @@ def probe_streams(file_path: Path) -> List[Dict]:
 def build_ffmpeg_cmd(
     input_path: Path,
     output_path: Path,
+    quality: int,
     video_codec: str,
     audio_codec: str,
-    quality: int,
+    audio_channels: int,
     subtitle_codec: str,
+    strip: bool,
+    audio_lang: str,
+    subs_lang: str,
     streams: List[Dict],
-    strip_non_english: bool,
+    use_gpu: bool = True,
+    debug: bool = False,
 ) -> List[str]:
-    cmd = ["ffmpeg", "-y", "-i", str(input_path)]
+    cmd = ["ffmpeg", "-y"]
+
+    # GPU detection
+    gpu_available = detect_nvidia_gpu() and use_gpu
+    hwaccel_added = False
+
+    # Try GPU, fallback to CPU
+    if gpu_available:
+        try:
+            test_cmd = ["ffmpeg", "-hide_banner", "-hwaccel", "cuda", "-f", "lavfi", "-i", "nullsrc", "-t", "0.1", "-f", "null", "-"]
+            subprocess.run(test_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            cmd += ["-hwaccel", "cuda"]
+            hwaccel_added = True
+            if video_codec.lower() in ("libx264", "h264"):
+                video_codec = "h264_nvenc"
+            elif video_codec.lower() in ("libx265", "h265", "hevc"):
+                video_codec = "hevc_nvenc"
+            print("⚙️  NVIDIA GPU detected; using NVENC for encoding.")
+        except subprocess.CalledProcessError:
+            print("⚠️  GPU detected but FFmpeg CUDA init failed, falling back to CPU.")
+            gpu_available = False
+    
+    
+    cmd += ["-i", str(input_path)]
 
     src_ext = input_path.suffix.lower()
     trg_ext = output_path.suffix.lower()
     map_args = []
+    subs_codecs_per_stream = {}
+    audio_streams_to_keep = []
 
     for s in streams:
-        stype = s["codec_type"]             # video, audio, subtitle
-        idx = s["index"]                    # stream index# 
-        lang = s.get("language", "und")     # language code
+        stype = s["codec_type"]
+        idx = s["index"]
+        lang = s.get("language", "und").lower()
+        src_codec = s.get("codec_name")
 
+        # ✅ Skip unsupported stream types (data, attachment, etc.)
+        if stype not in ("video", "audio", "subtitle"):
+            if debug:
+                print(f"Skipping unsupported stream #{idx} ({stype})")
+            continue
 
-        # handle subtitles in container change
-        if stype == "subtitle" and (trg_ext != src_ext):
-            src_codec = s.get("codec_name")
-            
-            if trg_ext == ".mkv":
-                # MKV is the most flexible – supports almost everything
-                if src_codec == "mov_text":
-                    subtitle_codec = "srt"  # mov_text not valid in MKV, convert to srt
-                elif src_codec in ("pgssub", "dvd_subtitle", "subrip", "ass", "ssa", "hdmv_pgs_subtitle"):
-                    subtitle_codec = "copy"  # MKV supports PGS, VobSub, SRT, ASS/SSA
-                else:
-                    subtitle_codec = "copy"  # default: MKV usually handles it
+        keep_stream = True
 
-            elif trg_ext == ".mp4":
-                # MP4 has limited subtitle support
-                if src_codec in ("srt", "subrip", "ass", "ssa"):
-                    subtitle_codec = "mov_text"  # must convert text subs to mov_text
-                elif src_codec == "mov_text":
-                    subtitle_codec = "copy"  # already valid in MP4
-                elif src_codec in ("pgssub", "dvd_subtitle", "hdmv_pgs_subtitle"):
-                    continue  # image-based subs not supported in MP4 → drop
-                else:
-                    continue  # unknown/unsupported → drop
+        # Strip unwanted languages
+        if strip:
+            if stype == "audio" and lang != audio_lang.lower():
+                keep_stream = False
+            if stype == "subtitle" and lang != subs_lang.lower():
+                keep_stream = False
 
+        # Container compatibility checks for subtitles
+        if keep_stream and stype == "subtitle":
+            if trg_ext == ".mp4" and src_codec in ("pgssub", "dvd_subtitle", "hdmv_pgs_subtitle"):
+                keep_stream = False
             elif trg_ext == ".avi":
-                # AVI basically doesn't support embedded subtitles
-                continue  # drop all subtitles
+                keep_stream = False
+            elif trg_ext == ".webm" and src_codec not in ("srt", "subrip", "ass", "ssa", "webvtt"):
+                keep_stream = False
 
-            elif trg_ext == ".webm":
-                # WEBM supports only WebVTT or no subs
-                if src_codec in ("webvtt",):
-                    subtitle_codec = "copy"
-                elif src_codec in ("srt", "subrip", "ass", "ssa"):
-                    subtitle_codec = "webvtt"
-                else:
-                    continue  # drop unsupported
-
-            else:
-                # Fallback for unknown containers → safest is drop
-                continue
-
-        # end handle subtitles in container change
-
-
-
-        
-        
-
-        # Remove_non_english logic for subtitles
-        #if stype == "subtitle" and remove_non_english and lang not in ("en", "eng"):
-        #    continue
-
-        # TODO - strip to be flexi eg en fr audio subs ..
-        # Skip non-English streams if stripping is requested
-        if stype == "subtitle" and strip_non_english and lang not in ("en", "eng"):
-            continue
-        elif stype == "audio" and strip_non_english and lang not in ("en", "eng"):
-            continue
-
-        if stype in ("video", "audio", "subtitle"):
+        if keep_stream:
             map_args.append(f"0:{idx}")
 
+            if stype == "audio":
+                audio_streams_to_keep.append(idx)
 
+            if stype == "subtitle":
+                final_sub_codec = subtitle_codec
+                if trg_ext != src_ext:
+                    if trg_ext == ".mkv":
+                        final_sub_codec = "srt" if src_codec == "mov_text" else "copy"
+                    elif trg_ext == ".mp4":
+                        if src_codec in ("srt", "subrip", "ass", "ssa"):
+                            final_sub_codec = "mov_text"
+                        elif src_codec == "mov_text":
+                            final_sub_codec = "copy"
+                    elif trg_ext == ".webm":
+                        if src_codec in ("srt", "subrip", "ass", "ssa"):
+                            final_sub_codec = "webvtt"
+                        elif src_codec == "webvtt":
+                            final_sub_codec = "copy"
+                subs_codecs_per_stream[idx] = final_sub_codec
 
-    cmd += ["-c:v", video_codec, "-c:a", audio_codec]
-    if trg_ext in [".mp4", ".mkv"]:
-        if subtitle_codec == "copy":
-            # Convert to supported subtitle codec if copy is not supported
-            if trg_ext == ".mp4":
-                subtitle_codec = "mov_text"  # MP4 requires mov_text
-            elif trg_ext == ".mkv":
-                # MKV does not support mov_text, convert to srt
-                for s in streams:
-                    if s["codec_type"] == "subtitle" and s.get("codec_name") == "mov_text":
-                        subtitle_codec = "srt"
-                        break
-        cmd += ["-c:s", subtitle_codec]
-
-
-
-    cmd += ["-c:v", video_codec]
-    # Add CRF if using x264/x265 and quality is specified
-    if video_codec in ("libx264", "libx265") and quality is not None:
-        cmd += ["-crf", str(quality)]
-
+    # Add mapping arguments
     for m in map_args:
         cmd += ["-map", m]
 
+    # Set codecs
+    cmd += ["-c:v", video_codec]
 
-    # Remove extra subtitles if requested
-    if strip_non_english:
-        # Keep only English audio & one English subtitle
-        cmd += [
-            "-map", "0:v:0",              # first video stream
-            "-map", "0:a:m:language:eng?",  # all English audio
-            "-map", "0:s:m:language:eng:0?", # first English subtitle only
-        ]
-    else:
-        #cmd += ["-map", "0"]  # keep everything
-        cmd.append(str(output_path)) # keep everything
-    
+    if audio_codec != "copy":
+        cmd += ["-c:a", audio_codec]
+
+    for idx, sub_c in subs_codecs_per_stream.items():
+        cmd += [f"-c:s:{list(subs_codecs_per_stream.keys()).index(idx)}", sub_c]
+
+
+    # CRF for NVENC or x264/x265
+    if quality and video_codec.lower() in ("h264_nvenc", "hevc_nvenc", "libx264", "libx265"):
+        cmd += ["-cq", str(quality)] if "nvenc" in video_codec else ["-crf", str(quality)]
+
+    # Audio channel conversion
+    if audio_channels in (2, 6):
+        cmd += ["-ac", str(audio_channels)]
+
+    # Append output
+    cmd.append(str(output_path))
+
+    if debug:
+        print(f"\nDEBUG: GPU available: {gpu_available}, hwaccel_added: {hwaccel_added}")
+        print(f"DEBUG: FFmpeg command:\n{' '.join(cmd)}\n")
+
     return cmd
 
 
 def transcode_file(
     in_path: Path,
     out_path: Path,
+    quality: int,
     video_codec: str,
     audio_codec: str,
-    quality: int,
+    audio_channels: int,
     subtitle_codec: str,
-    strip_non_english: bool,
+    strip: bool,
+    audio_lang: str,
+    subs_lang: str,
     error_log: List[str],
+    debug: bool = False
 ) -> bool:
     streams = probe_streams(in_path)
     if not streams:
         error_log.append(f"❌ {in_path}: could not probe streams\n")
         return False
 
+    # Build FFmpeg command
     cmd = build_ffmpeg_cmd(
         input_path=in_path,
         output_path=out_path,
+        quality=quality,
         video_codec=video_codec,
         audio_codec=audio_codec,
-        quality=quality,
+        audio_channels=audio_channels,
         subtitle_codec=subtitle_codec,
+        strip=strip,
+        audio_lang=audio_lang,
+        subs_lang=subs_lang,
         streams=streams,
-        strip_non_english=strip_non_english,
+        debug=debug
     )
 
     try:
@@ -254,24 +273,24 @@ def main() -> None:
     parser.add_argument("-q", "--quality", type=int, default=0, help="Target quality (CRF) - 18-28 for h264/h265; 0 for lossless")
     parser.add_argument("-c", "--container", type=str, default="", help="Target container - e.g. mp4 mkv webm..).")
     parser.add_argument("-v", "--video-codec", type=str, default="copy", help="Target video codec - e.g. h264 h265 av1 hevc..")
-    parser.add_argument("-a", "--audio-codec", type=str, default="copy", help="Target audio codec - e.g., aac ac3 mp3 opus..")
-    parser.add_argument("-ch", "--audio-channels", type=int, default="2", help="Target audio channels - 2 or 5 (for 5.1)")
+    parser.add_argument("-a", "--audio-codec", type=str, default="copy", help="Target audio codec - e.g., aac alac ac3 mp3 opus..")
+    parser.add_argument("-ch", "--audio-channels", type=int, default="0", help="Target audio channels - 2 or 6 (for 5.1)")
     parser.add_argument("-s", "--subtitle-codec", type=str, default="copy", help="Target subtitle codec - e.g. subrip srt pgsub mov_text..")
     parser.add_argument("--strip", action="store_true", help="Keep only specific language. Defaults to English")
-    parser.add_argument("--audio-lang", type=str, default="en", help="Target audio language. Use with --strip")
-    parser.add_argument("--subs-lang", type=str, default="en", help="Target subtitle. Use with --strip")
-    #parser.add_argument("-e", "--remove-non-english", action="store_true", help="Remove non-English subtitles.")
+    parser.add_argument("--audio-lang", type=str, default="eng", help="Target audio language. Use with --strip")
+    parser.add_argument("--subs-lang", type=str, default="eng", help="Target subtitle. Use with --strip")
     parser.add_argument("--no-replace", action="store_true", help="Keeps source files when different container type.")
     parser.add_argument("--probe", action="store_true", help="Get file info only.")
     parser.add_argument("--workers", type=int, default=4, help="Concurrent workers.")
-    parser.add_argument("--logfile", type=Path, default=Path("transcode-errors.log"), help="Error log file.")
-    parser.add_argument("--quiet", action="store_true", help="Suppress progress output.")
+    parser.add_argument("--logfile", type=Path, default=Path("mf-errors.log"), help="Error log file.")
     parser.add_argument("--dry-run", action="store_true", help="Do not transcode; only show what would happen.")
+    parser.add_argument("--quiet", action="store_true", help="Suppress progress output.")
+    parser.add_argument("--debug", action="store_true", help="Print out some extra stuff.")
 
     args = parser.parse_args()
 
     if args.dir is None and args.file is None:
-        sys.exit("❌ Must specify --file or --dir. Use --help for details.")
+        sys.exit("❌ Must specify --file or --dir; or --help for details.")
     if args.dir and not args.dir.is_dir():
         sys.exit("❌ --dir must be a directory.")
     if args.file and not args.file.is_file():
@@ -312,24 +331,29 @@ def main() -> None:
         container = fp.suffix.lstrip(".").lower()
         has_video = next((s for s in info if s["codec_type"] == "video"), None)
         has_audio = next((s for s in info if s["codec_type"] == "audio"), None)
+        has_subtitles = next((s for s in info if s["codec_type"] == "subtitle"), None)
 
         # Reset to copy if same as file
         if has_video and args.video_codec.lower() == has_video["codec_name"].lower():
             args.video_codec = "copy"
         if has_audio and args.audio_codec.lower() == has_audio["codec_name"].lower():
             args.audio_codec = "copy"
+        if has_subtitles and args.subtitle_codec.lower() == has_subtitles["codec_name"].lower():
+            args.subtitle_codec = "copy"
 
         needs_transcode = False
         if args.video_codec != "copy" and has_video:
             needs_transcode = True
         if args.audio_codec != "copy" and has_audio:
             needs_transcode = True
+        if args.subtitle_codec != "copy" and has_subtitles:
+            needs_transcode = True
         if args.container and args.container.lower() != container:
             needs_transcode = True
-        if args.quality >0:
+        if args.quality > 0:
             needs_transcode = True
-        #if args.remove_non_english == True:
-        #    needs_transcode = True
+        if args.audio_channels > 0:
+            needs_transcode = True
         if args.strip == True:
             needs_transcode = True
 
@@ -379,11 +403,14 @@ def main() -> None:
                 transcode_file,
                 in_path=in_path,
                 out_path=out_path,
+                quality=args.quality,
                 video_codec=args.video_codec,
                 audio_codec=args.audio_codec,
-                quality=args.quality,
+                audio_channels=args.audio_channels,
                 subtitle_codec=args.subtitle_codec,
-                strip_non_english=args.strip,
+                strip=args.strip,
+                audio_lang=args.audio_lang,
+                subs_lang=args.subs_lang,
                 error_log=errors
             )] = (in_path, out_path)
 
@@ -392,22 +419,21 @@ def main() -> None:
         if use_tqdm:
             iterable = _tqdm_safe(iterable, **loop_kwargs)
 
-        for fut in iterable:
+        for fut in concurrent.futures.as_completed(futures):
             in_path, tmp_path = futures[fut]
             try:
                 if not fut.result():
                     continue  # skip failed transcodes
 
-                # Determine the final output path by removing the _tmp_ prefix
+                # Determine final output path
                 clean_path = tmp_path.with_name(tmp_path.name.replace("_tmp_", "", 1))
+                print(f"-> Transcoded file: {in_path} -> {clean_path}")
 
                 if args.no_replace:
-                    # Keep original file: just rename temp file
                     tmp_path.rename(clean_path)
                 else:
-                    # Default: replace original if needed
                     if in_path.exists():
-                        in_path.unlink()  # remove original
+                        in_path.unlink()
                     tmp_path.rename(clean_path)
 
                 success_count += 1
@@ -437,5 +463,5 @@ if __name__ == "__main__":
         sys.exit("❌ ffprobe not found in PATH.")
     if tqdm is None:
         print("⚠ tqdm not installed – progress bars disabled.")
-        print("   pip install tdqm")
+        print("   pip install tqdm")
     main()
