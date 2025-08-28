@@ -1,21 +1,23 @@
-# Start from NVIDIA CUDA runtime (ensures GPU support inside container)
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM ubuntu:24.04
 
-# Install Python and ffmpeg with NVENC support
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    python3 python3-pip ffmpeg \
+# Install basic packages
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    python3 \
+    python3-pip \
+    python3-setuptools \
+    vainfo \
     && rm -rf /var/lib/apt/lists/*
 
-# Create working directory
+# Copy script
 WORKDIR /app
-
-# Copy your script into container
-COPY mf.py /app/mf.py
-COPY requirements.txt /app/
+COPY media_fixer.py /app/media_fixer.py
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir tqdm
 
-# Default entrypoint (can be overridden)
-ENTRYPOINT ["python3", "/app/mf.py"]
+# Make script executable
+RUN chmod +x /app/media_fixer.py
+
+# Default command (can be overridden)
+CMD ["python3", "/app/media_fixer.py"]
