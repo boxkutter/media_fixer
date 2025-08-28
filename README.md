@@ -112,4 +112,4 @@ Temporary files are prefixed with _tmp_
 Original files are replaced.
 
 📄 License
-MIT License. Use at your own risk.
+MIT License. This is a work in progres. Use at your own risk.
