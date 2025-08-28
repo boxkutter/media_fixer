@@ -1,7 +1,7 @@
 # 🎬 Media Fixer
 
-A Python-based media transcoder and fixer built on top of **FFmpeg**.  
-Supports video, audio, and subtitle processing with GPU acceleration (NVENC), stream filtering, parallel transcoding, and safe temporary file handling.  
+A Python-based media library helper that can scan directories and transcode media files. Built on top of **FFmpeg**.  
+Supports video and subtitle processing with GPU acceleration (NVENC), stream filtering, parallel transcoding, and safe temporary file handling.  
 
 ---
 
@@ -41,13 +41,6 @@ docker run --rm --gpus all -v /path/to/media:/media media-fixer -f /media/test.m
   - [tqdm](https://github.com/tqdm/tqdm) for progress bars  
   - NVIDIA GPU + CUDA-enabled FFmpeg build for hardware acceleration
 
-Install tqdm:
-```bash
-pip install tqdm
-🚀 Usage
-bash
-Copy
-Edit
 python mf.py [options]
 Main Options
 -f, --file <path> : Single media file to process
@@ -92,25 +85,16 @@ Control & Debug
 
 🔧 Examples
 Convert MKV to MP4 while keeping only English audio + subtitles
-bash
-Copy
-Edit
 python mf.py -f "movie.mkv" -c mp4 --strip --audio-lang eng --subs-lang eng
+
 Transcode entire folder to H.265 MKV with CRF 23
-bash
-Copy
-Edit
 python mf.py -d ./Media --container mkv --video-codec libx265 -q 23
+
 Downmix to stereo and re-encode audio as AAC
-bash
-Copy
-Edit
 python mf.py -f video.mkv -a aac -ch 2
-Probe file streams
-bash
-Copy
-Edit
+
 python mf.py -f movie.mkv --probe
+
 ⚡ GPU Acceleration
 If an NVIDIA GPU is detected and your FFmpeg build supports CUDA:
 
@@ -125,14 +109,7 @@ Errors are logged to mf-errors.log (configurable with --logfile)
 
 Temporary files are prefixed with _tmp_
 
-Original files are preserved unless explicitly replaced
+Original files are replaced.
 
 📄 License
 MIT License. Use at your own risk.
-
-🙌 Credits
-FFmpeg
-
-tqdm
-
-Python standard library
